@@ -279,31 +279,40 @@ class WebOptimizedLiquidCropper:
         
         hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
         sat = cv2.GaussianBlur(np.mean(hsv[:, :, 1], axis=1).reshape(-1, 1), (9, 1), 0).flatten()
+        val = cv2.GaussianBlur(np.mean(hsv[:, :, 2], axis=1).reshape(-1, 1), (9, 1), 0).flatten()
         
         cap_int = np.mean(intensity[max(0, cap_y - 20):cap_y])
         cap_sat = np.mean(sat[max(0, cap_y - 20):cap_y])
         body_sat = np.median(sat[int(bh * 0.60):base_y]) if base_y > int(bh * 0.60) else 0.0
+        body_val = np.median(val[int(bh * 0.60):base_y]) if base_y > int(bh * 0.60) else 100.0
         
-        # ค้นหาจุดเริ่มต้นของสารละลายที่มีสีจริง (Meniscus Tracking ป้องกันการหลุดไปจับคอขวด)
-        if body_sat > 35.0 or (body_sat - cap_sat) > 15.0:
-            # สารละลายมีสี: ต้องเกิดการเพิ่มขึ้นของ Saturation อย่างต่อเนื่อง (Sustained Rise)
-            # ตัดเงื่อนไขความสว่างตก (cap_int - intensity) ออก เพื่อไม่ให้หลุดไปจับเงาสะท้อนตรงคอขวดแก้วเปล่า
-            thresh_sat = max(cap_sat + 18.0, 35.0)
+        # ค้นหาจุดเริ่มต้นของสารละลายที่มีสีจริง (Robust Meniscus Tracking ตัดช่องว่างแก้วเปล่าใต้ฝาออก 100%)
+        is_colored = (body_sat > 35.0) or (body_sat - cap_sat > 15.0) or (body_val < 100.0)
+        if is_colored:
             candidates = []
-            for y in range(cap_y + 15, int(base_y - 20)):
-                if sat[y] >= thresh_sat and np.mean(sat[y:min(base_y, y + 15)]) >= thresh_sat:
-                    candidates.append(y)
-                    break
-                    
+            for y in range(cap_y + 10, int(base_y - 25)):
+                win_sat = np.mean(sat[y:min(base_y, y + 20)])
+                win_val = np.mean(val[y:min(base_y, y + 20)])
+                is_empty_glass = (win_sat < 25) and (win_val > 150)
+                if not is_empty_glass:
+                    if body_val < 70.0:
+                        # สารละลายสีเข้มจัด (เช่น Ammonia 10 mg/L หรือ Phosphate 1.5 mg/L)
+                        if win_val < 110.0:
+                            candidates.append(y)
+                            break
+                    else:
+                        if (win_sat >= max(cap_sat + 15.0, 30.0)) or (win_val <= min(cap_int - 20.0, 130.0)):
+                            candidates.append(y)
+                            break
             if candidates and candidates[0] < (bh * 0.85):
                 cand_y = candidates[0]
-                p_start = max(cap_y + 10, cand_y - 25)
-                p_end = min(base_y - 15, cand_y + 35)
+                p_start = max(cap_y + 8, cand_y - 20)
+                p_end = min(base_y - 15, cand_y + 25)
                 meniscus_y = p_start + int(np.argmax(row_g[p_start:p_end]))
             else:
-                meniscus_y = cap_y + int((base_y - cap_y) * 0.40)
+                meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
         else:
-            # สารละลายใส / 0 mg/L: ค้นหาเส้นผิวน้ำ Meniscus Refraction Edge ในช่วงกลางขวด (ข้ามคอขวดด้านบนและก้นขวดด้านล่าง)
+            # สารละลายใส / 0 mg/L: ค้นหาเส้นผิวน้ำ Meniscus Refraction Edge ในช่วงกลางขวด
             mid_s = cap_y + max(20, int((base_y - cap_y) * 0.15))
             mid_e = min(int(base_y - (base_y - cap_y) * 0.18), int(bh * 0.75))
             if mid_e > mid_s:
@@ -311,11 +320,18 @@ class WebOptimizedLiquidCropper:
                 if len(mid_grad) > 0 and np.max(mid_grad) > 6.0:
                     meniscus_y = mid_s + int(np.argmax(mid_grad))
                 else:
-                    meniscus_y = cap_y + int((base_y - cap_y) * 0.40)
+                    meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
             else:
-                meniscus_y = cap_y + int((base_y - cap_y) * 0.40)
+                meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
                 
         meniscus_y = max(cap_y + 8, min(meniscus_y, base_y - 25))
+        
+        # Buffer Zone (8% Top & Bottom Buffer): ตัดแสงสะท้อนขอบผิวน้ำ Meniscus และแสงสะท้อนโต๊ะขาวก้นขวด
+        raw_liq_h = base_y - meniscus_y
+        top_buf = max(3, int(raw_liq_h * 0.08))
+        bot_buf = max(3, int(raw_liq_h * 0.08))
+        effective_meniscus_y = meniscus_y + top_buf
+        effective_base_y = max(effective_meniscus_y + 15, base_y - bot_buf)
         
         # ดึงน้ำเต็มความกว้างขวด 100% (Full Bottle Width Coverage) ตามรูปทรงจริงของขวดแก้ว ไม่เว้นขอบข้าง
         x_left = 0
@@ -326,28 +342,21 @@ class WebOptimizedLiquidCropper:
         sat_ch = hsv_bottle[:, :, 1]
         val_ch = hsv_bottle[:, :, 2]
         for x in range(0, max(1, int(bw * 0.05))):
-            card_col = (sat_ch[meniscus_y:base_y, x] > 160) | (val_ch[meniscus_y:base_y, x] < 20)
+            card_col = (sat_ch[effective_meniscus_y:effective_base_y, x] > 160) | (val_ch[effective_meniscus_y:effective_base_y, x] < 20)
             if np.mean(card_col) > 0.70:
                 x_left = max(x_left, x + 1)
         for x in range(bw - 1, min(bw - 2, int(bw * 0.95)), -1):
-            card_col = (sat_ch[meniscus_y:base_y, x] > 160) | (val_ch[meniscus_y:base_y, x] < 20)
+            card_col = (sat_ch[effective_meniscus_y:effective_base_y, x] > 160) | (val_ch[effective_meniscus_y:effective_base_y, x] < 20)
             if np.mean(card_col) > 0.70:
                 x_right = min(x_right, x - 1)
         
         # ตรวจจับขอบเขตพื้นผิวโต๊ะ/ฉากหลังสีขาวใต้ก้นขวด เพื่อตัดออกตามรูปทรงขวดจริง
         b_ch, g_ch, r_ch = cv2.split(upright_bottle)
-        hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
-        sat_ch = hsv_bottle[:, :, 1]
-        val_ch = hsv_bottle[:, :, 2]
-        
-        # สำหรับสารละลายมีสี: แยกแยะพื้นโต๊ะขาวออกจากน้ำสีได้ชัดเจน
-        # สำหรับน้ำใส 0 mg/L: น้ำใสมีเฉดสีเทา/ขาว จึงต้องอิงตามเส้นขอบแก้วก้นขวดจริง (base_y)
-        is_colored = (body_sat > 35.0) or (body_sat - cap_sat > 15.0)
         is_white_table = (r_ch > 155) & (g_ch > 155) & (b_ch > 155) & (sat_ch < 38)
         
         bot_curve = []
         if is_colored:
-            bottom_start = max(meniscus_y + 20, int(bh * 0.70))
+            bottom_start = max(effective_meniscus_y + 15, int(bh * 0.70))
             for x in range(bw):
                 col_bgr = upright_bottle[bottom_start:, x]
                 col_sat = sat_ch[bottom_start:, x]
@@ -355,32 +364,31 @@ class WebOptimizedLiquidCropper:
                 if len(table_rows) > 0:
                     bot_row = bottom_start + table_rows[0] - 2
                 else:
-                    bot_row = base_y
-                bot_curve.append(min(base_y, bot_row))
+                    bot_row = effective_base_y
+                bot_curve.append(min(effective_base_y, bot_row))
         else:
             mid_curve_x = (x_left + x_right) / 2.0
             rx = (x_right - x_left) / 2.0 + 1e-5
             for x in range(bw):
                 dx = (x - mid_curve_x) / rx
-                curve_sag = max(2, int((x_right - x_left) * 0.04))
-                bot_y_val = base_y - int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - min(1.0, dx**2)))))
-                bot_curve.append(min(base_y, bot_y_val))
+                curve_sag = max(2, int((x_right - x_left) * 0.03))
+                bot_y_val = effective_base_y - int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - min(1.0, dx**2)))))
+                bot_curve.append(min(effective_base_y, bot_y_val))
             
         bot_curve = np.array(bot_curve)
         from scipy.ndimage import median_filter, gaussian_filter1d
         smooth_curve = gaussian_filter1d(median_filter(bot_curve, size=15), sigma=5)
         
-        # สร้างรูปทรงของเหลวจริง: ผิวน้ำใต้ฝาโค้งลง + ก้นขวดมนตามรูปทรงแก้วจริง (ตัดพื้นขาวออก 100%)
+        # สร้างรูปทรงของเหลวจริง: ผิวน้ำใต้ฝาโค้งลง + ก้นขวดมนตามรูปทรงแก้วจริง
         pts_contour = []
-        curve_sag = max(2, int((x_right - x_left) * 0.05))
+        curve_sag = max(2, int((x_right - x_left) * 0.03))
         for x in range(x_left, x_right + 1):
             dx = (x - (x_left + x_right) / 2.0) / ((x_right - x_left) / 2.0 + 1e-5)
-            y_curve = meniscus_y + int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - dx**2))))
+            y_curve = effective_meniscus_y + int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - dx**2))))
             pts_contour.append([x, y_curve])
             
         for x in range(x_right, x_left - 1, -1):
-            # แนบชิดตามขอบแก้วก้นขวด ตัดพื้นสีขาวด้านล่างออก
-            y_base = max(meniscus_y + 10, min(base_y, int(smooth_curve[x])))
+            y_base = max(effective_meniscus_y + 10, min(effective_base_y, int(smooth_curve[x])))
             pts_contour.append([x, y_base])
             
         pts_contour = np.array(pts_contour, dtype=np.int32)
@@ -388,16 +396,16 @@ class WebOptimizedLiquidCropper:
         liquid_mask = np.zeros((bh, bw), dtype=np.uint8)
         cv2.drawContours(liquid_mask, [pts_contour], -1, 255, -1)
         
-        # Guard 1: ตัดพิกเซลสีขาวใต้ขวดที่อาจเล็ดลอดออก (เฉพาะสารละลายมีสีเท่านั้น เพื่อไม่ให้ลบน้ำใส 0 mg/L)
+        # Guard 1: ตัดพิกเซลสีขาวใต้ขวดที่อาจเล็ดลอดออก
         if is_colored:
-            table_guard = is_white_table & (np.arange(bh)[:, None] > int(bh * 0.70)) & (np.arange(bh)[:, None] > (meniscus_y + 20))
+            table_guard = is_white_table & (np.arange(bh)[:, None] > int(bh * 0.70)) & (np.arange(bh)[:, None] > (effective_meniscus_y + 15))
             liquid_mask[table_guard] = 0
         
-        # Guard 2: ตัดพื้นที่แก้วเปล่าสีขาว/เทาด้านบนเหนือระดับน้ำ (เหลือเฉพาะมวลน้ำแท้จริง)
+        # Guard 2: ตัดพื้นที่แก้วเปล่าสีขาว/เทาด้านบนเหนือระดับน้ำ
         if body_sat > 35.0:
-            top_white = (r_ch > 135) & (g_ch > 135) & (b_ch > 135) & (sat_ch < 30) & (np.arange(bh)[:, None] < (meniscus_y + 12))
+            top_white = (r_ch > 135) & (g_ch > 135) & (b_ch > 135) & (sat_ch < 30) & (np.arange(bh)[:, None] < (effective_meniscus_y + 8))
         else:
-            top_white = (r_ch > 165) & (g_ch > 165) & (b_ch > 165) & (sat_ch < 20) & (np.arange(bh)[:, None] < (meniscus_y + 5))
+            top_white = (r_ch > 165) & (g_ch > 165) & (b_ch > 165) & (sat_ch < 20) & (np.arange(bh)[:, None] < (effective_meniscus_y + 5))
         liquid_mask[top_white] = 0
         
         # Guard 3: Auto-Skin Exclusion (ลบนิ้วมือ/เนื้อคนจับขวดออกจากมวลน้ำอัตโนมัติ)
@@ -407,13 +415,31 @@ class WebOptimizedLiquidCropper:
         true_skin = (cr >= 138) & (cr <= 175) & (cb >= 90) & (cb <= 128) & ((hue_ch <= 18) | (hue_ch >= 172)) & (r_ch.astype(int) - g_ch.astype(int) >= 15) & (sat_ch > 35) & (val_ch > 50) & (liquid_mask > 0)
         liquid_mask[true_skin] = 0
         
-        hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
+        # Illumination Normalization (Flat-Field Correction): เกลี่ยแสงในแนวตั้งให้สีสม่ำเสมอเหมือนกันทั้งภาพ 100%
+        lab_norm = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2LAB)
+        L_norm = lab_norm[:, :, 0].astype(float)
+        row_L = np.zeros(bh)
+        for y in range(effective_meniscus_y, effective_base_y):
+            m_r = liquid_mask[y, :] > 0
+            if np.sum(m_r) > 0:
+                row_L[y] = np.median(L_norm[y, m_r])
+                
+        valid_rows = np.where(row_L[effective_meniscus_y:effective_base_y] > 0)[0] + effective_meniscus_y
+        if len(valid_rows) > 0:
+            target_L = np.median(row_L[valid_rows])
+            for y in valid_rows:
+                factor = np.clip(target_L / (row_L[y] + 1e-5), 0.70, 1.40)
+                L_norm[y, liquid_mask[y, :] > 0] = np.clip(L_norm[y, liquid_mask[y, :] > 0] * factor, 0, 255)
+        lab_norm[:, :, 0] = L_norm.astype(np.uint8)
+        norm_bottle = cv2.cvtColor(lab_norm, cv2.COLOR_LAB2BGR)
+        b_ch, g_ch, r_ch = cv2.split(norm_bottle)
+        
+        hsv_bottle = cv2.cvtColor(norm_bottle, cv2.COLOR_BGR2HSV)
         sat_ch = hsv_bottle[:, :, 1]
         val_ch = hsv_bottle[:, :, 2]
         specular = (val_ch > 245) & (sat_ch < 35) & (liquid_mask > 0)
         pure_mask = (liquid_mask > 0) & (~specular)
         
-        b_ch, g_ch, r_ch = cv2.split(upright_bottle)
         rgba = cv2.merge([b_ch, g_ch, r_ch, liquid_mask])
         
         pts_idx = np.argwhere(liquid_mask > 0)
