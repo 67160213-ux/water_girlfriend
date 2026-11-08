@@ -18,16 +18,23 @@ import sys
 import cv2
 import numpy as np
 import torch
-from ultralytics import YOLO
+from ultralytics import YOLO, YOLOWorld
 
 DEVICE = 0 if torch.cuda.is_available() else 'cpu'
 
 class WebOptimizedLiquidCropper:
-    def __init__(self, model_path: str = "yolov8n.pt", device=None):
+    def __init__(self, model_path: str = "yolov8m-worldv2.pt", device=None):
         self.device = DEVICE if device is None else device
-        self.model = YOLO(model_path)
+        if "world" in model_path.lower():
+            self.model = YOLOWorld(model_path)
+            self.model.set_classes(["glass vial with white cap", "transparent chemical bottle", "bottle"])
+            self.is_world = True
+        else:
+            self.model = YOLO(model_path)
+            self.is_world = False
+            
         dev_name = torch.cuda.get_device_name(0) if self.device == 0 and torch.cuda.is_available() else "CPU"
-        print(f"[Engine] ใช้งานอุปกรณ์: {dev_name} (Device ID: {self.device})", flush=True)
+        print(f"[Engine] ใช้งานอุปกรณ์: {dev_name} (Device ID: {self.device}, Model: {os.path.basename(model_path)})", flush=True)
 
     @staticmethod
     def remove_drawn_markup(image: np.ndarray) -> np.ndarray:
@@ -51,7 +58,11 @@ class WebOptimizedLiquidCropper:
         # ปรับ conf=0.02 เพื่อจับขวดใส/ขวดแก้วทุกสภาพแสง
         results = self.model.predict(source=source, conf=0.02, device=self.device, verbose=False)[0]
         cands = []
-        target_classes = {"bottle", "vase", "cup", "wine glass", "toilet"}
+        if getattr(self, "is_world", False):
+            target_classes = set(self.model.names.values())
+        else:
+            target_classes = {"bottle", "vase", "cup", "wine glass", "toilet"}
+            
         for b, c, conf in zip(results.boxes.xyxy, results.boxes.cls, results.boxes.conf):
             c_name = self.model.names[int(c)]
             if c_name in target_classes:

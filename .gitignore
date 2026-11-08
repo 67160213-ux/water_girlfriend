@@ -19,6 +19,10 @@ archive/
 output/
 scratch/
 
+# Large Weights (Auto-downloaded by Ultralytics)
+yolov8m-worldv2.pt
+yolov8s.pt
+
 # OS files
 .DS_Store
 Thumbs.db
