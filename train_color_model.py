@@ -41,7 +41,7 @@ def parse_label(folder_str: str) -> tuple[str, float, int]:
     return chemical, conc, salinity
 
 def extract_features_from_liquid(liquid_png_path: str) -> dict:
-    """สกัดฟีเจอร์สีเฉพาะเนื้อน้ำจริง โดยตัดแสงสะท้อนจ้า (Specular Glare) ออก"""
+    """สกัดฟีเจอร์สีเฉพาะเนื้อน้ำจริง ด้วย Robust Median & IQR Filter ป้องกัน Noise 100%"""
     img = cv2.imread(liquid_png_path, cv2.IMREAD_UNCHANGED)
     if img is None or len(img.shape) != 3 or img.shape[2] != 4:
         return None
@@ -59,6 +59,14 @@ def extract_features_from_liquid(liquid_png_path: str) -> dict:
     if np.sum(pure_mask) < 50:
         pure_mask = mask # fallback ถ้าแสงสะท้อนทั้งภาพ
         
+    # ข้อ 2: Robust IQR Outlier Filtering (ตัดพิกเซลรอยขีดข่วน/จุดแสงสะท้อนขนาดเล็กออก)
+    v_pixels = val[pure_mask]
+    q25, q75 = np.percentile(v_pixels, 25), np.percentile(v_pixels, 75)
+    iqr_v = q75 - q25
+    iqr_mask = (val >= (q25 - 1.5 * iqr_v)) & (val <= (q75 + 1.5 * iqr_v)) & pure_mask
+    if np.sum(iqr_mask) >= 50:
+        pure_mask = iqr_mask
+        
     pure_b = b_ch[pure_mask]
     pure_g = g_ch[pure_mask]
     pure_r = r_ch[pure_mask]
@@ -72,28 +80,42 @@ def extract_features_from_liquid(liquid_png_path: str) -> dict:
     pure_s = sat[pure_mask]
     pure_v = val[pure_mask]
     
-    # ค่าสถิติ RGB
+    # ค่าสถิติ RGB (เน้น Median ที่ทนทานต่อ Outlier 100%)
     mean_r, median_r, std_r = float(np.mean(pure_r)), float(np.median(pure_r)), float(np.std(pure_r))
     mean_g, median_g, std_g = float(np.mean(pure_g)), float(np.median(pure_g)), float(np.std(pure_g))
     mean_b, median_b, std_b = float(np.mean(pure_b)), float(np.median(pure_b)), float(np.std(pure_b))
     
-    # อัตราส่วนสี (Color Ratios - ช่วยลดผลกระทบจากแสงแวดล้อมไม่คงที่)
-    rg_ratio = mean_r / (mean_g + 1e-5)
-    rb_ratio = mean_r / (mean_b + 1e-5)
-    gb_ratio = mean_g / (mean_b + 1e-5)
-    norm_r = mean_r / (mean_r + mean_g + mean_b + 1e-5)
-    norm_b = mean_b / (mean_r + mean_g + mean_b + 1e-5)
+    # ค่าสถิติ LAB / HSV
+    median_l = float(np.median(pure_l))
+    median_a = float(np.median(pure_a))
+    median_b_star = float(np.median(pure_b_star))
+    median_h = float(np.median(pure_h))
+    median_s = float(np.median(pure_s))
+    median_v = float(np.median(pure_v))
+    
+    # อัตราส่วนสีสัมพันธ์ (Robust Color Invariant Ratios)
+    rg_ratio = median_r / (median_g + 1e-5)
+    rb_ratio = median_r / (median_b + 1e-5)
+    gb_ratio = median_g / (median_b + 1e-5)
+    sum_rgb = median_r + median_g + median_b + 1e-5
+    norm_r = median_r / sum_rgb
+    norm_g = median_g / sum_rgb
+    norm_b = median_b / sum_rgb
+    chroma_a = median_a / (median_l + 1e-5)
+    chroma_b = median_b_star / (median_l + 1e-5)
     
     return {
         "mean_R": mean_r, "median_R": median_r, "std_R": std_r,
         "mean_G": mean_g, "median_G": median_g, "std_G": std_g,
         "mean_B": mean_b, "median_B": median_b, "std_B": std_b,
-        "mean_H": float(np.mean(pure_h)), "median_H": float(np.median(pure_h)),
-        "mean_S": float(np.mean(pure_s)), "median_S": float(np.median(pure_s)),
-        "mean_V": float(np.mean(pure_v)), "median_V": float(np.median(pure_v)),
+        "mean_H": float(np.mean(pure_h)), "median_H": median_h,
+        "mean_S": float(np.mean(pure_s)), "median_S": median_s,
+        "mean_V": float(np.mean(pure_v)), "median_V": median_v,
         "mean_L": float(np.mean(pure_l)), "mean_a": float(np.mean(pure_a)), "mean_b": float(np.mean(pure_b_star)),
+        "median_L": median_l, "median_a": median_a, "median_b": median_b_star,
         "rg_ratio": rg_ratio, "rb_ratio": rb_ratio, "gb_ratio": gb_ratio,
-        "norm_R": norm_r, "norm_B": norm_b,
+        "norm_R": norm_r, "norm_G": norm_g, "norm_B": norm_b,
+        "chroma_a": chroma_a, "chroma_b": chroma_b,
         "liquid_area_px": int(np.sum(pure_mask))
     }
 
@@ -158,14 +180,16 @@ def train_and_evaluate(train_crop_dir: str = "output/crop_train", test_crop_dir:
     df_test.to_csv("output/test_features.csv", index=False)
     print("บันทึกตารางฟีเจอร์สีที่: output/train_features.csv และ output/test_features.csv")
     
-    # คอลัมน์ฟีเจอร์ที่นำมาใช้ทำนาย
+    # คอลัมน์ฟีเจอร์ที่นำมาใช้ทำนาย (Robust Median, Invariant Ratios, CIELAB)
     feature_cols = [
-        "mean_R", "median_R", "std_R",
-        "mean_G", "median_G", "std_G",
-        "mean_B", "median_B", "std_B",
-        "mean_H", "mean_S", "mean_V",
-        "mean_L", "mean_a", "mean_b",
-        "rg_ratio", "rb_ratio", "gb_ratio", "norm_R", "norm_B"
+        "median_R", "median_G", "median_B",
+        "mean_R", "mean_G", "mean_B",
+        "std_R", "std_G", "std_B",
+        "median_H", "median_S", "median_V",
+        "median_L", "median_a", "median_b",
+        "rg_ratio", "rb_ratio", "gb_ratio",
+        "norm_R", "norm_G", "norm_B",
+        "chroma_a", "chroma_b"
     ]
     
     chemicals = ["Phosphate", "Ammonia"]

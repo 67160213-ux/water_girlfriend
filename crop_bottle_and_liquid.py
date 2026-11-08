@@ -329,59 +329,66 @@ class WebOptimizedLiquidCropper:
         # 4. Pure Liquid Homogeneous Core Boundaries (ตัด Noise ทุกอย่างออก 100% เหลือแต่น้ำเพียวๆ)
         raw_liq_h = base_y - meniscus_y
         
-        # Buffer Zone: เว้นระยะขอบบนเพื่อตัดรอยโค้งผิวน้ำ (Meniscus Arc) และแสงสะท้อนผิวน้ำออก 100%
-        top_buf = max(6, int(raw_liq_h * 0.10))
-        # Buffer Zone: เว้นระยะขอบล่างเพื่อตัดความโค้งของก้นขวดแก้ว และแสงสะท้อนพื้นโต๊ะขาวออก 100%
-        bot_buf = max(8, int(raw_liq_h * 0.10))
+        # กำหนดความกว้างแนวนอน: เว้นขอบแก้วทรงกระบอกข้างละ 7% สกัดเฉพาะมวลน้ำทรงกระบอกด้านใน 86%
+        x_left = max(1, int(bw * 0.07))
+        x_right = min(bw - 2, int(bw * 0.93))
         
-        pure_y1 = meniscus_y + top_buf
-        pure_y2 = max(pure_y1 + 20, base_y - bot_buf)
+        # ระบุแกนกลางมวลน้ำที่ปลอดภัยแน่นอน 100% (Guaranteed Safe Liquid Reference Core)
+        mid_y = meniscus_y + int(raw_liq_h * 0.50)
+        core_half = max(8, int(raw_liq_h * 0.12))
+        core_y1 = max(meniscus_y + 12, mid_y - core_half)
+        core_y2 = min(base_y - 12, mid_y + core_half)
         
-        # ขอบเขตแนวนอน (Horizontal Coverage): ดึงน้ำเต็มความกว้างขวดแก้ว 88% โดยเว้นระยะขอบข้าง 6%
-        # เพื่อตัดความหนาของผนังแก้วทรงกระบอก (Glass Wall Thickness) และแสงสะท้อนหักเหขอบแก้วออก 100%
-        x_left = max(1, int(bw * 0.06))
-        x_right = min(bw - 2, int(bw * 0.94))
-        
-        # Adaptive Trimming: ตรวจสอบและตัดแถบแสงสะท้อนโต๊ะขาวก้นขวด และแสงสะท้อนผิวน้ำส่วนบนเพิ่มเติม
-        b_ch, g_ch, r_ch = cv2.split(upright_bottle)
+        # วัดค่าสีอ้างอิงของน้ำจริงจากแกนกลาง (Core LAB Reference)
         hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
         sat_full = hsv_bottle[:, :, 1]
+        val_full = hsv_bottle[:, :, 2]
+        core_crop = upright_bottle[core_y1:core_y2, x_left:x_right]
+        core_lab = np.mean(cv2.cvtColor(core_crop, cv2.COLOR_BGR2LAB), axis=(0, 1)).astype(float)
         
-        # ค่าสีมวลน้ำหลักตรงกลางขวด (Stable Homogeneous Reference)
-        body_y1 = pure_y1 + int((pure_y2 - pure_y1) * 0.25)
-        body_y2 = pure_y1 + int((pure_y2 - pure_y1) * 0.75)
-        mid_body_bgr = np.median(upright_bottle[body_y1:body_y2, int(bw*0.3):int(bw*0.7)], axis=(0, 1))
-        mid_body_lab = cv2.cvtColor(np.uint8([[mid_body_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
-        
-        # ตรวจตัดแถบแสงสะท้อนโต๊ะขาวก้นขวด (Bottom White / Table Glare Trimmer)
-        for y in range(pure_y2, max(pure_y1 + 25, pure_y2 - int(raw_liq_h * 0.15)), -1):
-            row_bgr = np.mean(upright_bottle[y, x_left:x_right], axis=0)
+        # Dynamic Core-Growing: สแกนขยายขึ้นบน (Upwards) ไปจนถึงขอบเขตที่สียังบริสุทธิ์
+        pure_y1 = core_y1
+        for y in range(core_y1, meniscus_y + 6, -1):
+            row_bgr = upright_bottle[y:y+1, x_left:x_right]
+            row_lab = np.mean(cv2.cvtColor(row_bgr, cv2.COLOR_BGR2LAB), axis=(0, 1)).astype(float)
+            dE = np.linalg.norm(row_lab - core_lab)
             row_sat = np.mean(sat_full[y, x_left:x_right])
-            is_table = (row_bgr[0] > 160) and (row_bgr[1] > 160) and (row_bgr[2] > 160) and (row_sat < 35)
-            row_lab = cv2.cvtColor(np.uint8([[row_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
-            dE_row = np.linalg.norm(row_lab - mid_body_lab)
-            if is_table or (dE_row > 14.0 and row_lab[0] > mid_body_lab[0] + 12):
-                pure_y2 = y - 1
-            else:
+            row_val = np.mean(val_full[y, x_left:x_right])
+            is_glare = (row_val > 180) and (row_sat < 30)
+            if dE > 7.5 or is_glare:
+                pure_y1 = y + 8 # ถอยระยะกลับเข้ามาในเนื้อมวลน้ำบริสุทธิ์
                 break
-                
-        # ตรวจตัดแถบแสงสะท้อนผิวน้ำ/แก้วเปล่าด้านบน (Top Glare / Air Gap Trimmer)
-        for y in range(pure_y1, min(pure_y2 - 25, pure_y1 + int(raw_liq_h * 0.15))):
-            row_bgr = np.mean(upright_bottle[y, x_left:x_right], axis=0)
+            pure_y1 = y
+            
+        # Dynamic Core-Growing: สแกนขยายลงล่าง (Downwards) ไปจนถึงขอบเขตที่สียังบริสุทธิ์
+        pure_y2 = core_y2
+        for y in range(core_y2, base_y - 6):
+            row_bgr = upright_bottle[y:y+1, x_left:x_right]
+            row_lab = np.mean(cv2.cvtColor(row_bgr, cv2.COLOR_BGR2LAB), axis=(0, 1)).astype(float)
+            dE = np.linalg.norm(row_lab - core_lab)
             row_sat = np.mean(sat_full[y, x_left:x_right])
-            is_glare = (row_bgr[0] > 170) and (row_bgr[1] > 170) and (row_bgr[2] > 170) and (row_sat < 30)
-            row_lab = cv2.cvtColor(np.uint8([[row_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
-            dE_row = np.linalg.norm(row_lab - mid_body_lab)
-            if is_glare or (dE_row > 14.0 and row_lab[0] > mid_body_lab[0] + 12):
-                pure_y1 = y + 1
-            else:
+            row_val = np.mean(val_full[y, x_left:x_right])
+            is_table = (row_val > 170) and (row_sat < 35)
+            if dE > 7.5 or is_table:
+                pure_y2 = y - 8 # ถอยระยะกลับเข้ามาในเนื้อมวลน้ำบริสุทธิ์
                 break
+            pure_y2 = y
+            
+        # Fail-Safe Adaptive Kernel (ข้อ 4): รับประกัน 100% ไม่มีภาพใดล้มเหลว
+        min_safe_h = max(20, int(bh * 0.08))
+        if (pure_y2 - pure_y1) < min_safe_h:
+            # Fallback อัตโนมัติไปที่ Safe Center Kernel (แกนกลางปลอดภัย 35%-65% ของลำน้ำ)
+            pure_y1 = meniscus_y + int(raw_liq_h * 0.35)
+            pure_y2 = max(pure_y1 + 20, meniscus_y + int(raw_liq_h * 0.65))
+            x_left = max(1, int(bw * 0.09))
+            x_right = min(bw - 2, int(bw * 0.91))
                 
         # สร้าง Solid Pure Liquid Mask (คอลัมน์น้ำทรงกระบอกสมบูรณ์แบบ ไร้มุมแหว่ง/ไร้ขอบโปร่งใส)
         liquid_mask = np.zeros((bh, bw), dtype=np.uint8)
         liquid_mask[pure_y1:pure_y2, x_left:x_right] = 255
         
         # Auto-Skin Exclusion (ตัดนิ้วมือคนจับขวดออกถ้ามี)
+        b_ch, g_ch, r_ch = cv2.split(upright_bottle)
         ycrcb = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2YCrCb)
         cr, cb = ycrcb[:, :, 1], ycrcb[:, :, 2]
         hue_ch = hsv_bottle[:, :, 0]
