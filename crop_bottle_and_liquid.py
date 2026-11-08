@@ -326,105 +326,79 @@ class WebOptimizedLiquidCropper:
                 
         meniscus_y = max(cap_y + 8, min(meniscus_y, base_y - 25))
         
-        # Buffer Zone (8% Top & Bottom Buffer): ตัดแสงสะท้อนขอบผิวน้ำ Meniscus และแสงสะท้อนโต๊ะขาวก้นขวด
+        # 4. Pure Liquid Homogeneous Core Boundaries (ตัด Noise ทุกอย่างออก 100% เหลือแต่น้ำเพียวๆ)
         raw_liq_h = base_y - meniscus_y
-        top_buf = max(3, int(raw_liq_h * 0.08))
-        bot_buf = max(3, int(raw_liq_h * 0.08))
-        effective_meniscus_y = meniscus_y + top_buf
-        effective_base_y = max(effective_meniscus_y + 15, base_y - bot_buf)
         
-        # ดึงน้ำเต็มความกว้างขวด 100% (Full Bottle Width Coverage) ตามรูปทรงจริงของขวดแก้ว ไม่เว้นขอบข้าง
-        x_left = 0
-        x_right = bw - 1
+        # Buffer Zone: เว้นระยะขอบบนเพื่อตัดรอยโค้งผิวน้ำ (Meniscus Arc) และแสงสะท้อนผิวน้ำออก 100%
+        top_buf = max(6, int(raw_liq_h * 0.10))
+        # Buffer Zone: เว้นระยะขอบล่างเพื่อตัดความโค้งของก้นขวดแก้ว และแสงสะท้อนพื้นโต๊ะขาวออก 100%
+        bot_buf = max(8, int(raw_liq_h * 0.10))
         
-        # ป้องกันเฉพาะกรณีมีวัตถุแปลกปลอม/การ์ดสีดำทึบติดที่ขอบนอกสุดจริงๆ เท่านั้น (>70% ของคอลัมน์)
-        hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
-        sat_ch = hsv_bottle[:, :, 1]
-        val_ch = hsv_bottle[:, :, 2]
-        for x in range(0, max(1, int(bw * 0.05))):
-            card_col = (sat_ch[effective_meniscus_y:effective_base_y, x] > 160) | (val_ch[effective_meniscus_y:effective_base_y, x] < 20)
-            if np.mean(card_col) > 0.70:
-                x_left = max(x_left, x + 1)
-        for x in range(bw - 1, min(bw - 2, int(bw * 0.95)), -1):
-            card_col = (sat_ch[effective_meniscus_y:effective_base_y, x] > 160) | (val_ch[effective_meniscus_y:effective_base_y, x] < 20)
-            if np.mean(card_col) > 0.70:
-                x_right = min(x_right, x - 1)
+        pure_y1 = meniscus_y + top_buf
+        pure_y2 = max(pure_y1 + 20, base_y - bot_buf)
         
-        # ตรวจจับขอบเขตพื้นผิวโต๊ะ/ฉากหลังสีขาวใต้ก้นขวด เพื่อตัดออกตามรูปทรงขวดจริง
+        # ขอบเขตแนวนอน (Horizontal Coverage): ดึงน้ำเต็มความกว้างขวดแก้ว 88% โดยเว้นระยะขอบข้าง 6%
+        # เพื่อตัดความหนาของผนังแก้วทรงกระบอก (Glass Wall Thickness) และแสงสะท้อนหักเหขอบแก้วออก 100%
+        x_left = max(1, int(bw * 0.06))
+        x_right = min(bw - 2, int(bw * 0.94))
+        
+        # Adaptive Trimming: ตรวจสอบและตัดแถบแสงสะท้อนโต๊ะขาวก้นขวด และแสงสะท้อนผิวน้ำส่วนบนเพิ่มเติม
         b_ch, g_ch, r_ch = cv2.split(upright_bottle)
-        is_white_table = (r_ch > 155) & (g_ch > 155) & (b_ch > 155) & (sat_ch < 38)
+        hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
+        sat_full = hsv_bottle[:, :, 1]
         
-        bot_curve = []
-        if is_colored:
-            bottom_start = max(effective_meniscus_y + 15, int(bh * 0.70))
-            for x in range(bw):
-                col_bgr = upright_bottle[bottom_start:, x]
-                col_sat = sat_ch[bottom_start:, x]
-                table_rows = np.where((col_bgr[:, 0] > 155) & (col_bgr[:, 1] > 155) & (col_bgr[:, 2] > 155) & (col_sat < 38))[0]
-                if len(table_rows) > 0:
-                    bot_row = bottom_start + table_rows[0] - 2
-                else:
-                    bot_row = effective_base_y
-                bot_curve.append(min(effective_base_y, bot_row))
-        else:
-            mid_curve_x = (x_left + x_right) / 2.0
-            rx = (x_right - x_left) / 2.0 + 1e-5
-            for x in range(bw):
-                dx = (x - mid_curve_x) / rx
-                curve_sag = max(2, int((x_right - x_left) * 0.03))
-                bot_y_val = effective_base_y - int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - min(1.0, dx**2)))))
-                bot_curve.append(min(effective_base_y, bot_y_val))
-            
-        bot_curve = np.array(bot_curve)
-        from scipy.ndimage import median_filter, gaussian_filter1d
-        smooth_curve = gaussian_filter1d(median_filter(bot_curve, size=15), sigma=5)
+        # ค่าสีมวลน้ำหลักตรงกลางขวด (Stable Homogeneous Reference)
+        body_y1 = pure_y1 + int((pure_y2 - pure_y1) * 0.25)
+        body_y2 = pure_y1 + int((pure_y2 - pure_y1) * 0.75)
+        mid_body_bgr = np.median(upright_bottle[body_y1:body_y2, int(bw*0.3):int(bw*0.7)], axis=(0, 1))
+        mid_body_lab = cv2.cvtColor(np.uint8([[mid_body_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
         
-        # สร้างรูปทรงของเหลวจริง: ผิวน้ำใต้ฝาโค้งลง + ก้นขวดมนตามรูปทรงแก้วจริง
-        pts_contour = []
-        curve_sag = max(2, int((x_right - x_left) * 0.03))
-        for x in range(x_left, x_right + 1):
-            dx = (x - (x_left + x_right) / 2.0) / ((x_right - x_left) / 2.0 + 1e-5)
-            y_curve = effective_meniscus_y + int(curve_sag * (1.0 - np.sqrt(max(0.0, 1.0 - dx**2))))
-            pts_contour.append([x, y_curve])
-            
-        for x in range(x_right, x_left - 1, -1):
-            y_base = max(effective_meniscus_y + 10, min(effective_base_y, int(smooth_curve[x])))
-            pts_contour.append([x, y_base])
-            
-        pts_contour = np.array(pts_contour, dtype=np.int32)
-        
+        # ตรวจตัดแถบแสงสะท้อนโต๊ะขาวก้นขวด (Bottom White / Table Glare Trimmer)
+        for y in range(pure_y2, max(pure_y1 + 25, pure_y2 - int(raw_liq_h * 0.15)), -1):
+            row_bgr = np.mean(upright_bottle[y, x_left:x_right], axis=0)
+            row_sat = np.mean(sat_full[y, x_left:x_right])
+            is_table = (row_bgr[0] > 160) and (row_bgr[1] > 160) and (row_bgr[2] > 160) and (row_sat < 35)
+            row_lab = cv2.cvtColor(np.uint8([[row_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
+            dE_row = np.linalg.norm(row_lab - mid_body_lab)
+            if is_table or (dE_row > 14.0 and row_lab[0] > mid_body_lab[0] + 12):
+                pure_y2 = y - 1
+            else:
+                break
+                
+        # ตรวจตัดแถบแสงสะท้อนผิวน้ำ/แก้วเปล่าด้านบน (Top Glare / Air Gap Trimmer)
+        for y in range(pure_y1, min(pure_y2 - 25, pure_y1 + int(raw_liq_h * 0.15))):
+            row_bgr = np.mean(upright_bottle[y, x_left:x_right], axis=0)
+            row_sat = np.mean(sat_full[y, x_left:x_right])
+            is_glare = (row_bgr[0] > 170) and (row_bgr[1] > 170) and (row_bgr[2] > 170) and (row_sat < 30)
+            row_lab = cv2.cvtColor(np.uint8([[row_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(float)
+            dE_row = np.linalg.norm(row_lab - mid_body_lab)
+            if is_glare or (dE_row > 14.0 and row_lab[0] > mid_body_lab[0] + 12):
+                pure_y1 = y + 1
+            else:
+                break
+                
+        # สร้าง Solid Pure Liquid Mask (คอลัมน์น้ำทรงกระบอกสมบูรณ์แบบ ไร้มุมแหว่ง/ไร้ขอบโปร่งใส)
         liquid_mask = np.zeros((bh, bw), dtype=np.uint8)
-        cv2.drawContours(liquid_mask, [pts_contour], -1, 255, -1)
+        liquid_mask[pure_y1:pure_y2, x_left:x_right] = 255
         
-        # Guard 1: ตัดพิกเซลสีขาวใต้ขวดที่อาจเล็ดลอดออก
-        if is_colored:
-            table_guard = is_white_table & (np.arange(bh)[:, None] > int(bh * 0.70)) & (np.arange(bh)[:, None] > (effective_meniscus_y + 15))
-            liquid_mask[table_guard] = 0
-        
-        # Guard 2: ตัดพื้นที่แก้วเปล่าสีขาว/เทาด้านบนเหนือระดับน้ำ
-        if body_sat > 35.0:
-            top_white = (r_ch > 135) & (g_ch > 135) & (b_ch > 135) & (sat_ch < 30) & (np.arange(bh)[:, None] < (effective_meniscus_y + 8))
-        else:
-            top_white = (r_ch > 165) & (g_ch > 165) & (b_ch > 165) & (sat_ch < 20) & (np.arange(bh)[:, None] < (effective_meniscus_y + 5))
-        liquid_mask[top_white] = 0
-        
-        # Guard 3: Auto-Skin Exclusion (ลบนิ้วมือ/เนื้อคนจับขวดออกจากมวลน้ำอัตโนมัติ)
+        # Auto-Skin Exclusion (ตัดนิ้วมือคนจับขวดออกถ้ามี)
         ycrcb = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2YCrCb)
         cr, cb = ycrcb[:, :, 1], ycrcb[:, :, 2]
         hue_ch = hsv_bottle[:, :, 0]
-        true_skin = (cr >= 138) & (cr <= 175) & (cb >= 90) & (cb <= 128) & ((hue_ch <= 18) | (hue_ch >= 172)) & (r_ch.astype(int) - g_ch.astype(int) >= 15) & (sat_ch > 35) & (val_ch > 50) & (liquid_mask > 0)
+        val_ch = hsv_bottle[:, :, 2]
+        true_skin = (cr >= 138) & (cr <= 175) & (cb >= 90) & (cb <= 128) & ((hue_ch <= 18) | (hue_ch >= 172)) & (r_ch.astype(int) - g_ch.astype(int) >= 15) & (sat_full > 35) & (val_ch > 50) & (liquid_mask > 0)
         liquid_mask[true_skin] = 0
         
-        # Illumination Normalization (Flat-Field Correction): เกลี่ยแสงในแนวตั้งให้สีสม่ำเสมอเหมือนกันทั้งภาพ 100%
+        # Illumination Normalization (Flat-Field Correction): ปรับความสว่างแนวตั้งให้เนียนสม่ำเสมอเท่ากัน 100%
         lab_norm = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2LAB)
         L_norm = lab_norm[:, :, 0].astype(float)
         row_L = np.zeros(bh)
-        for y in range(effective_meniscus_y, effective_base_y):
+        for y in range(pure_y1, pure_y2):
             m_r = liquid_mask[y, :] > 0
             if np.sum(m_r) > 0:
                 row_L[y] = np.median(L_norm[y, m_r])
                 
-        valid_rows = np.where(row_L[effective_meniscus_y:effective_base_y] > 0)[0] + effective_meniscus_y
+        valid_rows = np.where(row_L[pure_y1:pure_y2] > 0)[0] + pure_y1
         if len(valid_rows) > 0:
             target_L = np.median(row_L[valid_rows])
             for y in valid_rows:
@@ -441,11 +415,14 @@ class WebOptimizedLiquidCropper:
         pure_mask = (liquid_mask > 0) & (~specular)
         
         rgba = cv2.merge([b_ch, g_ch, r_ch, liquid_mask])
+        liquid_rgba_crop = rgba[pure_y1:pure_y2, x_left:x_right].copy()
         
-        pts_idx = np.argwhere(liquid_mask > 0)
-        min_y, min_x = pts_idx.min(axis=0)
-        max_y, max_x = pts_idx.max(axis=0)
-        liquid_rgba_crop = rgba[min_y:max_y+1, min_x:max_x+1].copy()
+        pts_contour = np.array([
+            [x_left, pure_y1],
+            [x_right, pure_y1],
+            [x_right, pure_y2],
+            [x_left, pure_y2]
+        ], dtype=np.int32)
         
         valid_b = b_ch[pure_mask]
         valid_g = g_ch[pure_mask]
@@ -457,9 +434,13 @@ class WebOptimizedLiquidCropper:
             "cap_y": int(cap_y),
             "meniscus_y": int(meniscus_y),
             "bottom_y": int(base_y),
-            "liquid_height": int(base_y - meniscus_y),
-            "liquid_height_pct": float((base_y - meniscus_y) / bh * 100.0),
-            "liquid_width": int(max_x - min_x + 1),
+            "liquid_height": int(pure_y2 - pure_y1),
+            "liquid_height_pct": float((pure_y2 - pure_y1) / bh * 100.0),
+            "liquid_width": int(x_right - x_left + 1),
+            "pure_y1": int(pure_y1),
+            "pure_y2": int(pure_y2),
+            "x_left": int(x_left),
+            "x_right": int(x_right),
             "mean_R": float(np.mean(valid_r)) if total_px > 0 else 0.0,
             "mean_G": float(np.mean(valid_g)) if total_px > 0 else 0.0,
             "mean_B": float(np.mean(valid_b)) if total_px > 0 else 0.0,
