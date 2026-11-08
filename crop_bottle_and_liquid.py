@@ -317,30 +317,22 @@ class WebOptimizedLiquidCropper:
                 
         meniscus_y = max(cap_y + 8, min(meniscus_y, base_y - 25))
         
-        # ผนังข้างซ้าย-ขวา
-        gray_full = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2GRAY)
-        sob_x = np.abs(cv2.Sobel(gray_full[meniscus_y:base_y, :], cv2.CV_32F, 1, 0, ksize=3))
-        col_grad = np.mean(sob_x, axis=0)
+        # ดึงน้ำเต็มความกว้างขวด 100% (Full Bottle Width Coverage) ตามรูปทรงจริงของขวดแก้ว ไม่เว้นขอบข้าง
+        x_left = 0
+        x_right = bw - 1
         
-        mid_x = bw // 2
-        left_peak = int(np.argmax(col_grad[:mid_x - 10])) if mid_x > 20 else 2
-        right_peak = mid_x + 10 + int(np.argmax(col_grad[mid_x + 10:])) if mid_x + 10 < bw else bw - 3
-        
-        x_left = max(2, min(left_peak + 2, int(bw * 0.12)))
-        x_right = min(bw - 2, max(right_peak - 2, int(bw * 0.88)))
-        
-        # Card Margin Trimmer: สแกนขอบซ้าย-ขวา หากพบแถบการ์ดสี ให้ร่นขอบเข้ามาด้านใน
+        # ป้องกันเฉพาะกรณีมีวัตถุแปลกปลอม/การ์ดสีดำทึบติดที่ขอบนอกสุดจริงๆ เท่านั้น (>70% ของคอลัมน์)
         hsv_bottle = cv2.cvtColor(upright_bottle, cv2.COLOR_BGR2HSV)
         sat_ch = hsv_bottle[:, :, 1]
         val_ch = hsv_bottle[:, :, 2]
-        for x in range(0, int(bw * 0.18)):
-            card_col = (sat_ch[meniscus_y:base_y, x] > 115) | (val_ch[meniscus_y:base_y, x] < 30)
-            if np.mean(card_col) > 0.35:
-                x_left = max(x_left, x + 3)
-        for x in range(bw - 1, int(bw * 0.82), -1):
-            card_col = (sat_ch[meniscus_y:base_y, x] > 115) | (val_ch[meniscus_y:base_y, x] < 30)
-            if np.mean(card_col) > 0.35:
-                x_right = min(x_right, x - 3)
+        for x in range(0, max(1, int(bw * 0.05))):
+            card_col = (sat_ch[meniscus_y:base_y, x] > 160) | (val_ch[meniscus_y:base_y, x] < 20)
+            if np.mean(card_col) > 0.70:
+                x_left = max(x_left, x + 1)
+        for x in range(bw - 1, min(bw - 2, int(bw * 0.95)), -1):
+            card_col = (sat_ch[meniscus_y:base_y, x] > 160) | (val_ch[meniscus_y:base_y, x] < 20)
+            if np.mean(card_col) > 0.70:
+                x_right = min(x_right, x - 1)
         
         # ตรวจจับขอบเขตพื้นผิวโต๊ะ/ฉากหลังสีขาวใต้ก้นขวด เพื่อตัดออกตามรูปทรงขวดจริง
         b_ch, g_ch, r_ch = cv2.split(upright_bottle)
