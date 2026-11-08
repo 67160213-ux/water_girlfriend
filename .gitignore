@@ -1,0 +1,25 @@
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.ipynb_checkpoints/
+
+# Datasets and Large Binary Folders (Too large for GitHub)
+dataset_split/
+dataset_cropped/
+Testkit for AI/
+archive/
+output/
+scratch/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
