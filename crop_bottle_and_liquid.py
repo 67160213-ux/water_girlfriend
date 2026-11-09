@@ -140,6 +140,32 @@ class WebOptimizedLiquidCropper:
         return (int(w * 0.35), int(h * 0.20), int(w * 0.65), int(h * 0.85))
 
     @staticmethod
+    def cut_bottle_cap(image: np.ndarray, box: tuple[int, int, int, int]) -> tuple[tuple[int, int, int, int], int]:
+        """
+        ตัดฝาขวด (Bottle Cap) ออกจากกรอบขวดที่ YOLO ตรวจพบ ก่อนเข้าสู่กระบวนการต่อไป:
+        1. วิเคราะห์อนุพันธ์แนวดิ่ง (Sobel Y) และการเปลี่ยนผ่านสี/ความสว่างของฝาพลาสติกสีขาว
+        2. ตรวจจับขอบล่างของฝาขวด (Cap Bottom Rim) ในช่วง 10% ถึง 38% ของความสูงขวด
+        3. ปรับกรอบ Bounding Box ให้ตัดฝาออก เพื่อส่งเฉพาะตัวขวดแก้วและของเหลวเข้าสู่กระบวนการ Deskew และ Meniscus
+        """
+        x1, y1, x2, y2 = box
+        bw, bh = x2 - x1, y2 - y1
+        patch = image[y1:y2, x1:x2]
+        
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        sob_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+        row_g = cv2.GaussianBlur(np.mean(sob_y[:, int(bw * 0.25):int(bw * 0.75)], axis=1).reshape(-1, 1), (9, 1), 0).flatten()
+        
+        s1, s2 = max(5, int(bh * 0.10)), min(bh - 20, int(bh * 0.38))
+        if s2 > s1:
+            cap_edge = s1 + int(np.argmax(row_g[s1:s2]))
+        else:
+            cap_edge = int(bh * 0.25)
+            
+        cut_y1 = min(y2 - 30, y1 + cap_edge + 2)
+        box_no_cap = (x1, cut_y1, x2, y2)
+        return box_no_cap, cap_edge + 2
+
+    @staticmethod
     def deskew_and_tight_crop(image: np.ndarray, box: tuple[int, int, int, int]) -> dict:
         """
         ปรับขวดให้ตั้งตรง 90 องศา (Deskew) โดยไม่ล็อกขนาดคงที่:
@@ -218,7 +244,9 @@ class WebOptimizedLiquidCropper:
         sob_y = np.abs(cv2.Sobel(gray_s[:, l_wall:r_wall], cv2.CV_32F, 0, 1, ksize=3))
         row_sums = cv2.GaussianBlur(np.mean(sob_y, axis=1).reshape(-1, 1), (9, 1), 0).flatten()
         
-        top_y = int(np.argmax(row_sums[:int(ph * 0.25)])) if int(ph * 0.25) > 0 else 0
+        # ขอบบนสุดของตัวขวด (ที่ตัดฝาขวดออกแล้ว): เริ่มต้นที่ระดับ y1 ใน patch
+        y1_in_patch = max(0, y1 - py1)
+        top_y = y1_in_patch
         
         # ค้นหาก้นขวดจริง: อิงจากพิกัดต่ำสุดที่ YOLO ตรวจพบ (y2_patch) และขอบการเปลี่ยนผ่าน
         y2_patch = y2 - py1
@@ -260,14 +288,6 @@ class WebOptimizedLiquidCropper:
         sob_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
         row_g = cv2.GaussianBlur(np.mean(sob_y, axis=1).reshape(-1, 1), (9, 1), 0).flatten()
         
-        # ค้นหาขอบล่างของฝาขวด: เริ่มต้นค้นหาที่ 8% ของความสูงขึ้นไป (ข้ามขอบบนสุดของภาพ y=0..1 ป้องกันจับขอบภาพ)
-        cap_search_start = max(5, int(bh * 0.08))
-        cap_search_end = min(bh - 20, int(bh * 0.38))
-        if cap_search_end > cap_search_start:
-            cap_y = cap_search_start + int(np.argmax(row_g[cap_search_start:cap_search_end]))
-        else:
-            cap_y = int(bh * 0.22)
-            
         # ก้นขวดจริง (ครอบคลุมมวลน้ำตั้งแต่ก้นขวด)
         if base_hint_y is not None and 0 < base_hint_y < bh:
             base_y = base_hint_y
@@ -275,7 +295,7 @@ class WebOptimizedLiquidCropper:
             base_search_start = int(bh * 0.80)
             base_search = row_g[base_search_start:]
             base_y = base_search_start + (int(np.argmax(base_search)) if len(base_search) > 0 else int(bh * 0.15))
-        base_y = min(bh - 1, max(cap_y + 40, base_y))
+        base_y = min(bh - 1, max(30, base_y))
         
         bgr = np.mean(center, axis=1)
         intensity = np.mean(bgr, axis=1)
@@ -284,51 +304,45 @@ class WebOptimizedLiquidCropper:
         sat = cv2.GaussianBlur(np.mean(hsv[:, :, 1], axis=1).reshape(-1, 1), (9, 1), 0).flatten()
         val = cv2.GaussianBlur(np.mean(hsv[:, :, 2], axis=1).reshape(-1, 1), (9, 1), 0).flatten()
         
-        cap_int = np.mean(intensity[max(0, cap_y - 20):cap_y])
-        cap_sat = np.mean(sat[max(0, cap_y - 20):cap_y])
-        body_sat = np.median(sat[int(bh * 0.60):base_y]) if base_y > int(bh * 0.60) else 0.0
-        body_val = np.median(val[int(bh * 0.60):base_y]) if base_y > int(bh * 0.60) else 100.0
+        body_sat = np.median(sat[int(bh * 0.50):base_y]) if base_y > int(bh * 0.50) else 0.0
+        body_val = np.median(val[int(bh * 0.50):base_y]) if base_y > int(bh * 0.50) else 100.0
         
-        # ค้นหาจุดเริ่มต้นของสารละลายที่มีสีจริง (Robust Meniscus Tracking ตัดช่องว่างแก้วเปล่าใต้ฝาออก 100%)
-        is_colored = (body_sat > 35.0) or (body_sat - cap_sat > 15.0) or (body_val < 100.0)
+        # ค้นหาจุดเริ่มต้นของสารละลาย (เนื่องจากตัดฝาขวดออกไปก่อนแล้ว ขอบบนจึงเริ่มต้นที่คอแก้วหรือผิวน้ำทันที)
+        is_colored = (body_sat > 35.0) or (body_val < 100.0)
         if is_colored:
             candidates = []
-            for y in range(cap_y + 10, int(base_y - 25)):
+            for y in range(0, int(base_y - 25)):
                 win_sat = np.mean(sat[y:min(base_y, y + 20)])
                 win_val = np.mean(val[y:min(base_y, y + 20)])
-                is_empty_glass = (win_sat < 25) and (win_val > 150)
+                is_empty_glass = (win_sat < 30) and (win_val > 140)
                 if not is_empty_glass:
                     if body_val < 70.0:
-                        # สารละลายสีเข้มจัด (เช่น Ammonia 10 mg/L หรือ Phosphate 1.5 mg/L)
                         if win_val < 110.0:
                             candidates.append(y)
                             break
                     else:
-                        if (win_sat >= max(cap_sat + 15.0, 30.0)) or (win_val <= min(cap_int - 20.0, 130.0)):
+                        if (win_sat >= 30.0) or (win_val <= 125.0):
                             candidates.append(y)
                             break
-            if candidates and candidates[0] < (bh * 0.85):
+            if candidates:
                 cand_y = candidates[0]
-                p_start = max(cap_y + 8, cand_y - 20)
+                p_start = max(0, cand_y - 20)
                 p_end = min(base_y - 15, cand_y + 25)
-                meniscus_y = p_start + int(np.argmax(row_g[p_start:p_end]))
+                sub_grad = row_g[p_start:p_end]
+                meniscus_y = p_start + (int(np.argmax(sub_grad)) if len(sub_grad) > 0 else 0)
             else:
-                meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
+                meniscus_y = 5
         else:
-            # สารละลายใส / 0 mg/L: ค้นหาเส้นผิวน้ำ Meniscus Refraction Edge ใต้ขอบฝาขวด (Sub-cap Meniscus)
-            # ในหลอดทดลองน้ำใส ระดับน้ำจะอยู่ใต้ขอบฝาเพียง 8-25 พิกเซล ทำให้เกิดการหักเหแสงเป็นเส้นขนานชัดเจน
-            search_start = cap_y + 8
-            search_end = min(base_y - 25, int(cap_y + (base_y - cap_y) * 0.55))
+            # สารละลายใส / Phosphate 0 mg/L: เส้นผิวน้ำ Meniscus Refraction Edge จะอยู่บริเวณปากคอแก้ว (0 ถึง 35% ของความสูง)
+            search_start = 2
+            search_end = min(base_y - 25, int(bh * 0.35))
             if search_end > search_start:
                 subcap_grad = row_g[search_start:search_end]
-                if len(subcap_grad) > 0 and np.max(subcap_grad) > 4.5:
-                    meniscus_y = search_start + int(np.argmax(subcap_grad))
-                else:
-                    meniscus_y = cap_y + 12
+                meniscus_y = search_start + (int(np.argmax(subcap_grad)) if len(subcap_grad) > 0 else 5)
             else:
-                meniscus_y = cap_y + 12
+                meniscus_y = 5
                 
-        meniscus_y = max(cap_y + 8, min(meniscus_y, base_y - 25))
+        meniscus_y = max(0, min(meniscus_y, base_y - 20))
         
         # 4. สกัดมวลน้ำทั้งหมดในขวดด้วย Curved Meniscus Geometric Profile
         # อ้างอิงงานวิจัย: Liu et al. (2011), Zhang et al. (2025), Baudin et al. (2020)
@@ -340,8 +354,8 @@ class WebOptimizedLiquidCropper:
         sob_y_full = np.abs(cv2.Sobel(gray_full, cv2.CV_32F, 0, 1, ksize=3))
         
         # กำหนดกรอบการค้นหาผิวน้ำรอบค่า meniscus_y
-        s_y1 = max(cap_y + 5, meniscus_y - 30)
-        s_y2 = min(base_y - 25, meniscus_y + 35)
+        s_y1 = max(0, meniscus_y - 25)
+        s_y2 = min(base_y - 20, meniscus_y + 35)
         
         xs = []
         ys = []
@@ -369,7 +383,7 @@ class WebOptimizedLiquidCropper:
         else:
             top_curve = np.full(bw, meniscus_y)
             
-        top_curve = np.clip(top_curve, cap_y + 6, base_y - 20).astype(int)
+        top_curve = np.clip(top_curve, 0, base_y - 15).astype(int)
         
         # ตรวจจับเส้นโค้งก้นขวดแก้วจริง (Bottom Base Contour) ตามโมเดลทรงกระบอก 3D (Baudin et al. 2020)
         bot_curve = []
@@ -410,7 +424,7 @@ class WebOptimizedLiquidCropper:
         stats = {
             "total_pixels": int(total_px),
             "glare_filtered_px": 0,
-            "cap_y": int(cap_y),
+            "cap_removed": True,
             "meniscus_y": int(np.mean(top_curve)),
             "bottom_y": int(base_y),
             "liquid_height": int(max_y - min_y),
@@ -433,7 +447,6 @@ class WebOptimizedLiquidCropper:
             "contour": pts_contour,
             "rgba": liquid_rgba_crop,
             "stats": stats,
-            "cap_y": cap_y,
             "meniscus_y": int(np.mean(top_curve)),
             "bottom_y": base_y,
             "top_curve": top_curve,
@@ -454,18 +467,21 @@ class WebOptimizedLiquidCropper:
         # 1. ลบเส้นขีดเขียน
         clean_img = self.remove_drawn_markup(img)
         
-        # 2. ตรวจจับขวดตัวอย่าง
+        # 2. ตรวจจับขวดตัวอย่างด้วย YOLO
         raw_box = self.locate_bottle(clean_img, image_path=image_path)
         
-        # 3. หมุนปรับระนาบขวดให้ตั้งตรง 90 องศา (Automatic Deskew) ก่อนทำการ Crop
-        deskew_res = self.deskew_and_tight_crop(clean_img, raw_box)
+        # 3. ตัดฝาขวดออกก่อน (Cut off bottle cap first) ตามที่กำหนด
+        box_no_cap, cap_height = self.cut_bottle_cap(clean_img, raw_box)
+        
+        # 4. หมุนปรับระนาบขวดให้ตั้งตรง 90 องศา (Automatic Deskew) จากตัวขวดที่ตัดฝาออกแล้ว
+        deskew_res = self.deskew_and_tight_crop(clean_img, box_no_cap)
         bottle_crop = deskew_res["upright_bottle"]
         tilt_angle = deskew_res["tilt_angle"]
         
         bh, bw = bottle_crop.shape[:2]
         aspect = bh / float(bw) if bw > 0 else 0
         
-        # 4. ตรวจจับระดับน้ำและสกัดมวลของเหลวตามจริง (ครอบคลุมตั้งแต่ก้นขวดถึงผิวน้ำใต้ฝา)
+        # 5. ตรวจจับระดับน้ำและสกัดมวลของเหลวตามจริง (Curved Meniscus Geometric Profile)
         base_hint_y = deskew_res.get("base_y", None)
         liq = self.detect_water_level_and_segment(bottle_crop, base_hint_y=base_hint_y)
         st = liq["stats"]
@@ -478,12 +494,9 @@ class WebOptimizedLiquidCropper:
         cv2.imwrite(bottle_path, bottle_crop)
         cv2.imwrite(liquid_path, liq["rgba"])
         
-        # 5. ภาพ Diagnostic แสดงระดับน้ำและมุมหมุน
+        # 6. ภาพ Diagnostic แสดงระดับน้ำและมุมหมุน
         vis = bottle_crop.copy()
         cv2.drawContours(vis, [liq["contour"]], -1, (0, 255, 0), 2)
-        
-        cv2.line(vis, (0, liq["cap_y"]), (bw, liq["cap_y"]), (0, 165, 255), 2)
-        cv2.putText(vis, f"Cap Edge (y={liq['cap_y']})", (5, liq["cap_y"] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 165, 255), 1)
         
         top_curve = liq.get("top_curve", None)
         if top_curve is not None:
@@ -491,7 +504,7 @@ class WebOptimizedLiquidCropper:
             cv2.polylines(vis, [pts_meniscus], False, (0, 255, 255), 2)
         else:
             cv2.line(vis, (0, liq["meniscus_y"]), (bw, liq["meniscus_y"]), (0, 255, 255), 2)
-        cv2.putText(vis, f"Meniscus Curve (y~{liq['meniscus_y']})", (5, liq["meniscus_y"] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
+        cv2.putText(vis, f"Meniscus Curve (y~{liq['meniscus_y']})", (5, max(18, liq["meniscus_y"] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
         
         bot_curve = liq.get("bot_curve", None)
         if bot_curve is not None:
@@ -507,8 +520,8 @@ class WebOptimizedLiquidCropper:
         sc_b = min(360.0 / bh, 240.0 / bw)
         b_disp = cv2.resize(vis, (int(bw * sc_b), int(bh * sc_b)))
         panel[60:60+b_disp.shape[0], 40:40+b_disp.shape[1]] = b_disp
-        cv2.putText(panel, f"1. Deskewed Bottle (Tilt: {tilt_angle:+.1f} deg -> 90 deg)", (40, 38), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1)
+        cv2.putText(panel, f"1. Bottle Body (Cap Removed: {cap_height} px, Tilt: {tilt_angle:+.1f} deg)", (40, 38), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1)
         
         pure_liq = np.zeros((lh, lw, 3), dtype=np.uint8)
         alpha = liq["rgba"][:, :, 3] / 255.0
@@ -518,23 +531,22 @@ class WebOptimizedLiquidCropper:
         sc_l = min(360.0 / lh, 240.0 / lw)
         l_disp = cv2.resize(pure_liq, (int(lw * sc_l), int(lh * sc_l)))
         panel[60:60+l_disp.shape[0], 340:340+l_disp.shape[1]] = l_disp
-        cv2.putText(panel, f"2. Exact Pure Liquid ({st['liquid_height_pct']:.1f}% Full, {st['total_pixels']:,} px)", (340, 38), 
+        cv2.putText(panel, f"2. Exact Pure Liquid ({st['liquid_height_pct']:.1f}% of Body, {st['total_pixels']:,} px)", (340, 38), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
         
         lines = [
             "=== Automatic Deskew & Level Report ===",
             f"Detected Tilt Angle: {tilt_angle:+.2f} deg",
             f"Correction: Rotated {-tilt_angle:+.2f} deg to 90 deg Upright",
-            f"Dimensions: {bw}x{bh} px (Aspect H/W={aspect:.2f})",
-            f"Cap Bottom: y={st['cap_y']} px",
+            f"Cap Status: CUT OFF FIRST ({cap_height} px removed)",
+            f"Body Dimensions: {bw}x{bh} px (Aspect H/W={aspect:.2f})",
             f"Meniscus Level: y~{st['meniscus_y']} px (Curved Arc)",
-            f"Liquid Column: {st['liquid_height']} px ({st['liquid_height_pct']:.1f}%)",
+            f"Liquid Column: {st['liquid_height']} px ({st['liquid_height_pct']:.1f}% of Body)",
             f"Pure Liquid: {st['total_pixels']:,} px (100% Mass)",
-            f"Filtered Glare: {st['glare_filtered_px']:,} px (0 Bite Marks)",
             f"Mean RGB: ({st['mean_R']:.1f}, {st['mean_G']:.1f}, {st['mean_B']:.1f})",
             "",
             "[Dynamic Scale-Free Assurance]",
-            "  Size Limits: NONE (Scale-Invariant)",
+            "  Bottle Cap: Cut Off First Before Processing",
             "  Meniscus Fit: 2nd-Deg Polynomial (Liu et al. 2011)",
             "  Silhouette: 3D Cylindrical Polygon (Baudin et al. 2020)"
         ]
