@@ -372,8 +372,11 @@ class WebOptimizedLiquidCropper:
             
             if med_sat > 35.0:
                 # สารละลายมีสี (เช่น แอมโมเนียเขียว/เหลือง, ฟอสเฟตฟ้า):
-                # แสงสะท้อนผิวน้ำด้านบนและแสงสะท้อนโต๊ะก้นแก้วจะสว่างจัด (Val สูง) แต่สีซีดไร้สี (Sat ต่ำ)
-                is_glare = (val_ch > 140) & (sat_ch < 45) & init_liquid_mask
+                # 1. แสงสะท้อนผิวน้ำโค้งด้านบน (Specular Glare): สว่างกว่าเนื้อมวลน้ำ แต่สีซีดจาง
+                is_specular = (val_ch > max(120, med_val + 20)) & (sat_ch < min(60, med_sat * 0.50))
+                # 2. แสงสะท้อนพื้นโต๊ะก้นแก้ว (Table Caustics): แสงสะท้อนทะลุก้นแก้วที่ไร้สี
+                is_table = (sat_ch < 45) & (val_ch > 105)
+                is_glare = (is_specular | is_table) & init_liquid_mask
             else:
                 # สารละลายใส / Phosphate 0 mg/L:
                 # ใช้วิธี Adaptive Cut เฉพาะแสงสะท้อนจ้าผิดปกติ ไม่ให้กินเนื้อมวลน้ำใส
