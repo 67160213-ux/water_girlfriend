@@ -11,36 +11,37 @@
 d:\my_girlfriend_work\
 │
 ├── README.md                      # เอกสารอธิบายโครงสร้างและการใช้งานโปรเจกต์
+├── สิ่งที่ตรวจจับ.md               # ข้อกำหนดสถาปัตยกรรมระบบตรวจจับขวดและสกัดมวลน้ำ 100%
 ├── requirements.txt               # รายการไลบรารีและ Dependencies ทั้งหมด
-├── yolov8n.pt                     # โมเดล YOLOv8n (Object Detection ตรวจจับขวด)
+├── yolov8m-worldv2.pt             # โมเดล YOLO-World M (ตรวจจับขวดแก้วตัวอย่างความแม่นยำสูง)
+├── yolov8n.pt                     # โมเดล YOLOv8n สำรอง
 │
 ├── 🚀 สคริปต์หลัก (Core Scripts)
-│   ├── water_quality_pipeline.py  # ไปป์ไลน์หลัก: Train, Evaluate, และสร้าง Test Diagnostics
-│   └── predict_single_image.py    # สคริปต์ทำนายผลภาพใหม่เดี่ยวๆ (Single Image Inference)
+│   ├── crop_bottle_and_liquid.py  # ไปป์ไลน์หลัก: ตรวจจับขวด, หมุน 90°, สกัดมวลน้ำเต็มขวด
+│   ├── train_color_model.py       # เทรนโมเดลสี PLS/SVR บนมวลน้ำบริสุทธิ์ (Phosphate & Ammonia)
+│   ├── predict_single_image.py    # สคริปต์ทำนายผลภาพใหม่เดี่ยวๆ (Single Image Inference)
+│   └── water_quality_pipeline.py  # ไปป์ไลน์เคมีวิเคราะห์รุ่นดั้งเดิม
 │
 ├── 📊 ชุดข้อมูล (Datasets)
-│   ├── Testkit for AI/            # โฟลเดอร์รูปภาพต้นฉบับดั้งเดิม (ห้ามแตะต้อง)
-│   └── dataset_split/             # ชุดข้อมูลแบ่ง Train (80%) และ Test (20%) เด็ดขาด
-│       ├── train/                 # 967 ภาพสำหรับฝึกสอนโมเดล
-│       ├── test/                  # 241 ภาพสำหรับทดสอบ (Held-out Evaluation)
-│       └── manifest.json          # ดัชนีระบุ Path, สารละลาย, ค่าความเข้มข้นจริง
+│   ├── Testkit for AI/            # โฟลเดอร์รูปภาพต้นฉบับดั้งเดิม (1,568 ไฟล์ เก็บรักษาไว้เป็น Backup)
+│   ├── dataset_split/             # ชุดข้อมูลแบ่ง Train (80%) และ Test (20%) พร้อมเปลี่ยนชื่อเป็นระเบียบ
+│   │   ├── train/                 # 1,109 ภาพสำหรับฝึกสอนโมเดล
+│   │   ├── test/                  # 279 ภาพสำหรับทดสอบ (Held-out Evaluation)
+│   │   ├── manifest.json          # ดัชนีระบุ Path, สารละลาย, ค่าความเข้มข้นจริง
+│   │   └── rename_mapping.json    # ตารางบันทึกการเปลี่ยนชื่อไฟล์ย้อนกลับไปยังต้นฉบับ
+│   ├── dataset_cropped/           # ชุดข้อมูลที่ผ่านการ Crop มวลน้ำแล้ว (4,164 ไฟล์)
+│   └── that_i_want_to_crop/       # โฟลเดอร์ภาพเฉพาะกิจที่ผู้ใช้ระบุเก็บไว้
 │
 ├── 🧠 โมเดลที่เทรนแล้ว (Trained Chemometric Models)
-│   └── saved_models/
-│       ├── Phosphate_pls.pkl      # โมเดล PLS สำหรับ Phosphate (ช่วง 0-2.0 mg/L)
-│       ├── Ammonia_0ppt_pls.pkl   # โมเดล PLS สำหรับ Ammonia น้ำจืด 0 ppt (ช่วง 0-16.0 mg/L)
-│       └── Ammonia_30ppt_pls.pkl  # โมเดล PLS สำหรับ Ammonia น้ำเค็ม 30 ppt (ช่วง 0-16.0 mg/L)
+│   └── models/
+│       ├── phosphate_model.pkl    # โมเดลทำนายความเข้มข้น Phosphate (R² > 0.989)
+│       └── ammonia_model.pkl      # โมเดลทำนายความเข้มข้น Ammonia (R² > 0.987)
 │
-├── 🖼️ ผลลัพธ์การทดสอบและการวิเคราะห์ (Results & Diagnostics)
-│   ├── test_crop_results/         # ภาพ Diagnostic Panels 241 ภาพจากการประมวลผล Test Set
-│   │   ├── Phosphate/             # 90 ภาพ
-│   │   ├── Ammonia_0ppt/          # 119 ภาพ
-│   │   └── Ammonia_30ppt/         # 32 ภาพ
-│   ├── inference_results/         # ภาพ Diagnostic Panel จากการทำนายภาพใหม่รายภาพ
-│   └── pipeline_results/          # กราฟ Calibration Curve และไฟล์สรุป metrics.csv
+├── 🖼️ ผลลัพธ์การรัน (Outputs)
+│   └── output/                    # โฟลเดอร์รองรับผลลัพธ์ภาพ Crop และกราฟ Calibration
 │
 └── 🗃️ โฟลเดอร์เสริม (Utilities & Archive)
-    ├── debug_diagnostics/         # ภาพบันทึกขั้นตอนทดสอบ Inpainting, Cap Cut, Liquid Volume
+    ├── scratch/                   # สคริปต์ทดสอบและเครื่องมือ Utility ตรวจสอบระบบ
     └── archive/                   # สคริปต์ทดลองรุ่นก่อนหน้า (Legacy Code)
 ```
 
