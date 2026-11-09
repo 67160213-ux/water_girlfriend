@@ -312,17 +312,18 @@ class WebOptimizedLiquidCropper:
             else:
                 meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
         else:
-            # สารละลายใส / 0 mg/L: ค้นหาเส้นผิวน้ำ Meniscus Refraction Edge ในช่วงกลางขวด
-            mid_s = cap_y + max(20, int((base_y - cap_y) * 0.15))
-            mid_e = min(int(base_y - (base_y - cap_y) * 0.18), int(bh * 0.75))
-            if mid_e > mid_s:
-                mid_grad = row_g[mid_s:mid_e]
-                if len(mid_grad) > 0 and np.max(mid_grad) > 6.0:
-                    meniscus_y = mid_s + int(np.argmax(mid_grad))
+            # สารละลายใส / 0 mg/L: ค้นหาเส้นผิวน้ำ Meniscus Refraction Edge ใต้ขอบฝาขวด (Sub-cap Meniscus)
+            # ในหลอดทดลองน้ำใส ระดับน้ำจะอยู่ใต้ขอบฝาเพียง 8-25 พิกเซล ทำให้เกิดการหักเหแสงเป็นเส้นขนานชัดเจน
+            search_start = cap_y + 8
+            search_end = min(base_y - 25, int(cap_y + (base_y - cap_y) * 0.55))
+            if search_end > search_start:
+                subcap_grad = row_g[search_start:search_end]
+                if len(subcap_grad) > 0 and np.max(subcap_grad) > 4.5:
+                    meniscus_y = search_start + int(np.argmax(subcap_grad))
                 else:
-                    meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
+                    meniscus_y = cap_y + 12
             else:
-                meniscus_y = cap_y + int((base_y - cap_y) * 0.35)
+                meniscus_y = cap_y + 12
                 
         meniscus_y = max(cap_y + 8, min(meniscus_y, base_y - 25))
         
@@ -361,6 +362,26 @@ class WebOptimizedLiquidCropper:
         sat_ch = hsv_bottle[:, :, 1]
         val_ch = hsv_bottle[:, :, 2]
         
+        # กรองแสงสะท้อนสีขาวและแสงสะท้อนพื้นโต๊ะ (Smart White Glare & Table Reflection Filter)
+        # ผสานทั้งความสว่าง (Gray/Value) และความสดของสี (Saturation) เพื่อแยกแสงสะท้อนออกจากเนื้อมวลน้ำ
+        init_liquid_mask = (liquid_mask > 0)
+        glare_px = 0
+        if np.any(init_liquid_mask):
+            med_sat = float(np.median(sat_ch[init_liquid_mask]))
+            med_val = float(np.median(val_ch[init_liquid_mask]))
+            
+            if med_sat > 35.0:
+                # สารละลายมีสี (เช่น แอมโมเนียเขียว/เหลือง, ฟอสเฟตฟ้า):
+                # แสงสะท้อนผิวน้ำด้านบนและแสงสะท้อนโต๊ะก้นแก้วจะสว่างจัด (Val สูง) แต่สีซีดไร้สี (Sat ต่ำ)
+                is_glare = (val_ch > 140) & (sat_ch < 45) & init_liquid_mask
+            else:
+                # สารละลายใส / Phosphate 0 mg/L:
+                # ใช้วิธี Adaptive Cut เฉพาะแสงสะท้อนจ้าผิดปกติ ไม่ให้กินเนื้อมวลน้ำใส
+                is_glare = (val_ch > max(215, med_val + 20)) & (sat_ch < 25) & init_liquid_mask
+                
+            glare_px = int(np.sum(is_glare))
+            liquid_mask[is_glare] = 0
+        
         rgba = cv2.merge([b_ch, g_ch, r_ch, liquid_mask])
         liquid_rgba_crop = rgba[pure_y1:pure_y2+1, 0:bw].copy()
         
@@ -372,6 +393,7 @@ class WebOptimizedLiquidCropper:
         
         stats = {
             "total_pixels": int(total_px),
+            "glare_filtered_px": int(glare_px),
             "cap_y": int(cap_y),
             "meniscus_y": int(meniscus_y),
             "bottom_y": int(base_y),
@@ -468,7 +490,7 @@ class WebOptimizedLiquidCropper:
         sc_l = min(360.0 / lh, 240.0 / lw)
         l_disp = cv2.resize(pure_liq, (int(lw * sc_l), int(lh * sc_l)))
         panel[60:60+l_disp.shape[0], 340:340+l_disp.shape[1]] = l_disp
-        cv2.putText(panel, f"2. Exact Liquid ({st['liquid_height_pct']:.1f}% Full, {st['total_pixels']:,} px)", (340, 38), 
+        cv2.putText(panel, f"2. Exact Pure Liquid ({st['liquid_height_pct']:.1f}% Full, {st['total_pixels']:,} px)", (340, 38), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
         
         lines = [
@@ -479,13 +501,14 @@ class WebOptimizedLiquidCropper:
             f"Cap Bottom: y={st['cap_y']} px",
             f"Meniscus Level: y={st['meniscus_y']} px",
             f"Liquid Column: {st['liquid_height']} px ({st['liquid_height_pct']:.1f}%)",
-            f"Liquid Area: {st['total_pixels']:,} px",
+            f"Pure Liquid: {st['total_pixels']:,} px",
+            f"Filtered Glare: {st['glare_filtered_px']:,} px",
             f"Mean RGB: ({st['mean_R']:.1f}, {st['mean_G']:.1f}, {st['mean_B']:.1f})",
             "",
             "[Dynamic Scale-Free Assurance]",
             "  Size Limits: NONE (Scale-Invariant)",
-            "  Angle Limits: Dynamic Hough Tracing",
-            "  Water Level: Dynamic Sustained Tracking"
+            "  Glare Filter: Gray+Sat Dynamic Cut",
+            "  Water Level: Sub-Cap Meniscus Tracking"
         ]
         for idx, line in enumerate(lines):
             col = (0, 255, 0) if "deg" in line or "NONE" in line or "Dynamic" in line else (220, 220, 220)
@@ -557,7 +580,8 @@ if __name__ == "__main__":
         print(f"  ภาพมวลน้ำรูปทรงจริง (โปร่งใส): {res['liquid_rgba']}")
         print(f"  ภาพแผงสรุป Diagnostic: {res['diagnostic']}")
         st = res["stats"]
-        print(f"  ระดับน้ำ: {st['liquid_height']} px ({st['liquid_height_pct']:.1f}% ของตัวขวด, {st['total_pixels']:,} พิกเซล)")
+        print(f"  ระดับน้ำ: {st['liquid_height']} px ({st['liquid_height_pct']:.1f}% ของตัวขวด)")
+        print(f"  มวลน้ำบริสุทธิ์ (Pure Liquid): {st['total_pixels']:,} พิกเซล (กรองแสงสะท้อนออก {st['glare_filtered_px']:,} พิกเซล)")
         print(f"  ค่าสีเฉลี่ย RGB: ({st['mean_R']:.1f}, {st['mean_G']:.1f}, {st['mean_B']:.1f})")
     else:
         print(f"[Error] ไม่พบไฟล์หรือโฟลเดอร์: {target}")
