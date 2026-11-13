@@ -40,35 +40,50 @@
 
 ---
 
-## 📁 โครงสร้างโปรเจกต์ (Workspace Structure)
+## 📁 โครงสร้างโปรเจกต์ตามที่จัดเก็บใน Git (Repository & Workspace Structure)
 
 ```text
-d:\my_girlfriend_work\
+water_girlfriend/ (Git Repository)
 │
-├── README.md                      # เอกสารสรุปภาพรวมและการใช้งานระบบ (เอกสารนี้)
-├── สิ่งที่ทำ.md                   # คู่มือสถาปัตยกรรมระบบ สถิติเรขาคณิต และสูตรทางคณิตศาสตร์ฉบับละเอียด
-├── requirements.txt               # รายการไลบรารีและ Dependencies
-├── yolov8m-worldv2.pt             # โมเดล YOLO-World M (ตรวจจับตำแหน่งขวด)
-├── sam2.1_b.pt                    # โมเดล SAM 2.1 Base (ตรวจจับรูปทรงขวดและหมุนปรับระนาบ 90° แนวดิ่ง)
+├── 📄 เอกสารและไฟล์คอนฟิก (Documentation & Config)
+│   ├── README.md                      # เอกสารสรุปภาพรวมและการใช้งานระบบ (เอกสารนี้)
+│   ├── สิ่งที่ทำ.md                   # คู่มือสถาปัตยกรรมระบบ สถิติเรขาคณิต และสูตรทางคณิตศาสตร์ฉบับละเอียด
+│   ├── requirements.txt               # รายการไลบรารีและ Dependencies
+│   └── .gitignore                     # กำหนดโฟลเดอร์ผลลัพธ์และโมเดลขนาดใหญ่ไม่ให้อัปขึ้น Git
 │
-├── 🚀 สคริปต์หลัก (Core Pipeline Scripts)
-│   ├── crop_bottle_and_liquid.py  # โมดูลหลักเวอร์ชันสมบูรณ์: ตรวจจับ, หมุนตรง, พาราโบลา, 5 Solutions, Foreign Color Cleaner
-│   ├── train_color_model.py       # ฝึกสอนโมเดลเคมีวิเคราะห์สี (Chemometrics Standard Calibration Curve)
-│   └── predict_single_image.py    # สคริปต์ทำนายค่าความเข้มข้นสารเคมีจากภาพมวลน้ำ (Inference)
+├── 🚀 สคริปต์หลักของระบบ (Core Production Scripts)
+│   ├── crop_bottle_and_liquid.py      # โมดูลหลัก: ตรวจจับขวด, หมุน 90° (SAM 2), พาราโบลา, 5 Solutions, CIELAB Foreign Color Cleaner
+│   ├── recrop_all_dataset.py          # สคริปต์รัน Re-crop ทั้งชุดข้อมูล 1,388 ภาพ บน GPU แบบอัตโนมัติ
+│   ├── copy_liquid_exact_shape.py     # ยูทิลิตี้คัดลอกเฉพาะมวลน้ำ _liquid_exact_shape.png ไปยังโฟลเดอร์พร้อมใช้
+│   ├── train_color_model.py           # ฝึกสอนโมเดลเคมีวิเคราะห์สี (Chemometrics Calibration Curve)
+│   ├── predict_single_image.py        # สคริปต์ทำนายความเข้มข้นสารเคมีจากภาพมวลน้ำบริสุทธิ์ (Inference)
+│   └── water_quality_pipeline.py      # โมดูล Pipeline ประมวลผลและสกัดฟีเจอร์สี
 │
-├── 📊 ชุดข้อมูล (Datasets)
-│   ├── dataset_split/             # ชุดข้อมูลต้นฉบับแบ่ง Train (80%) และ Test (20%) รวม 1,388 ภาพ
-│   ├── dataset_cropped/           # ผลลัพธ์จากการประมวลผลทั้งชุดข้อมูล (1,360 ภาพพร้อมใช้งาน, 97.98%)
-│   │   ├── crops_ready/           # ภาพมวลน้ำที่ผ่านเกณฑ์พร้อมใช้งาน 100% (_clean.png และ _raw.png)
-│   │   ├── crops_not_ready/       # ภาพที่ไม่ผ่านเกณฑ์พร้อม issues.txt ระบุเหตุผล
-│   │   ├── diagnostics/           # แผงวิเคราะห์ Diagnostic 5 ขั้นตอน
-│   │   └── reports/               # crop_readiness_report.csv และ readiness_statistics.json
-│   └── that_i_want_to_crop/       # โฟลเดอร์ภาพตัวอย่างเฉพาะกิจ
+├── 🧪 ชุดทดสอบและสคริปต์วิจัย (Research & Testing Suite)
+│   └── test/
+│       ├── test_foreign_color_pipeline.py       # อัลกอริทึมตัดและเกลี่ยสีแปลกปลอม (Foreign Color Cleaner Core)
+│       ├── run_enhanced_pipeline_showcase.py    # สคริปต์รันประเมินผล 10 เฉดสีสารเคมี Ammonia & Phosphate
+│       ├── batch_crop_and_evaluate.py           # สคริปต์ Batch ทดสอบและประเมินคุณภาพความพร้อม (Readiness Evaluation)
+│       ├── crop_bottle_and_liquid_experiment.py # สคริปต์ทดลองเชิงทัศนศาสตร์สำหรับงานวิจัย
+│       ├── generate_foreign_color_comparison.py # สคริปต์สร้างภาพเปรียบเทียบผลลัพธ์
+│       ├── run_multishade_foreign_color_test.py # สคริปต์รันวิเคราะห์ความสม่ำเสมอหลายเฉดสี
+│       ├── ten_enhanced_pipeline.png            # ภาพผลลัพธ์ Showcase 10 แถว 5 คอลัมน์ (Master Showcase)
+│       ├── foreign_color_solutions_showcase.png # ภาพสรุปการตัดสีแปลกปลอมแบบที่ 1 และ 2
+│       └── multishade_foreign_color_comparison.png # กราฟเปรียบเทียบการเพิ่มขึ้นของคะแนนความพร้อม
 │
-└── 🧠 โมเดลเคมีที่เทรนแล้ว (Trained Chemometric Models)
-    └── models/
-        ├── phosphate_model.pkl    # โมเดลทำนายความเข้มข้น Phosphate
-        └── ammonia_model.pkl      # โมเดลทำนายความเข้มข้น Ammonia
+├── 🖼️ ภาพตัวอย่างทดสอบที่อยู่ใน Git (Sample Image in Git)
+│   └── that_i_want_to_crop/
+│       └── 20250729_141617.jpg        # ภาพตัวอย่างขวดพร้อมทดสอบได้ทันทีหลังโคลน Git
+│
+├── ⚖️ โมเดลน้ำหนักเบาใน Git (Lightweight Model in Git)
+│   └── yolov8n.pt                     # โมเดล YOLOv8 Nano ไซซ์เล็กสำหรับทดสอบทันที
+│
+└── 💾 โฟลเดอร์ที่สร้างขึ้นขณะรันในเครื่อง (Local Runtime Only - อยู่ใน .gitignore)
+    ├── sam2.1_b.pt                    # โมเดล SAM 2.1 Base (161 MB - ดาวน์โหลดไว้ใน root)
+    ├── yolov8m-worldv2.pt             # โมเดล YOLO-World M (57 MB - ดาวน์โหลดอัตโนมัติหรือวางใน root)
+    ├── dataset_split/                 # ชุดข้อมูลต้นฉบับ 1,388 ภาพ (Train / Test)
+    ├── dataset_cropped/               # ผลลัพธ์ Batch Crop (crops_ready, crops_not_ready, diagnostics, reports)
+    └── output/                        # โฟลเดอร์เก็บผลลัพธ์ภาพเดี่ยวและการเทรนโมเดลเคมี
 ```
 
 ---
@@ -101,7 +116,10 @@ flowchart TD
 # รูปแบบคำสั่ง:
 python crop_bottle_and_liquid.py "พาธของไฟล์รูปภาพ" "โฟลเดอร์ปลายทาง"
 
-# ตัวอย่าง: ทดสอบรูปภาพสารละลาย Ammonia 0 mg/L
+# ตัวอย่างที่ 1: ทดสอบกับภาพตัวอย่างที่ติดมากับ Git ทันที (ไม่ต้องดาวน์โหลด Dataset)
+python crop_bottle_and_liquid.py "that_i_want_to_crop\20250729_141617.jpg" "output\crop_result"
+
+# ตัวอย่างที่ 2: ทดสอบกับภาพสารละลายในชุดข้อมูล Ammonia 0 mg/L
 python crop_bottle_and_liquid.py "dataset_split\test\10_04_69\Ammonia 0 mg_l 0 ppt\Ammonia 0 mg_l 0 ppt_02.jpg" "output\crop_result"
 ```
 **ผลลัพธ์ที่ได้ในโฟลเดอร์ปลายทาง:**
