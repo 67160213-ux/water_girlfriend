@@ -18,10 +18,18 @@ Testkit for AI/
 archive/
 output/
 scratch/
+test/crops_ready/
+test/crops_not_ready/
+test/diagnostics/
+test/output_enhanced/
+test/reports/
 
-# Large Weights (Auto-downloaded by Ultralytics)
+# Large Weights (Auto-downloaded by Ultralytics / SAM 2)
 yolov8m-worldv2.pt
 yolov8s.pt
+sam2.1_b.pt
+FastSAM-s.pt
+models/
 
 # OS files
 .DS_Store
